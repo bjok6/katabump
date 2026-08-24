@@ -1,0 +1,78 @@
+name: Katabump Auto Renew
+
+on:
+  schedule:
+  - cron: '0 2 */3 * *'  # 每天 UTC 0点 (北京时间 8点) 运行,根据服务到期时间自行修改
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  Renew-Katabump:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write  
+      contents: read
+    
+    steps:
+    - uses: actions/checkout@v6
+    - name: ⚙ 设置 Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+
+    - name: 🛠️ 安装系统依赖和python依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk
+        pip install seleniumbase requests
+        seleniumbase install chromedriver
+
+    - name: ⚙ 设置代理 (sing-box)
+      continue-on-error: true
+      env:
+        NODE_LINK: ${{ secrets.NODE_LINK }}
+      run: |
+        bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
+
+    - name: 🚀 运行续期脚本
+      env:
+        KATABUMP_EMAIL: ${{ secrets.KATABUMP_EMAIL }}
+        KATABUMP_PASSWORD: ${{ secrets.KATABUMP_PASSWORD }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+      run: |
+        xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
+          python3 app.py
+
+      # ========== 防止 60 天无活动禁用 workflow ==========
+    - name: 📅 更新 time.txt 保持仓库活跃
+      if: always()
+      run: |
+        echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" > time.txt
+        echo "# 此文件由 GitHub Actions 自动更新，用于防止仓库 60 天无活动导致 scheduled workflow 被禁用" >> time.txt
+        echo "# Auto-updated by GitHub Actions to prevent scheduled workflows from being disabled after 60 days of inactivity" >> time.txt
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add time.txt
+        # 只有内容变化时才 commit（避免空 commit）
+        if git diff --staged --quiet; then
+          echo "time.txt 无变化，跳过 commit"
+        else
+          git commit -m "chore: update time.txt to keep workflow alive [skip ci]"
+          git push
+          echo "✅ time.txt 已更新并推送"
+        fi
+          
+    - name: 🧹 清理旧的工作流运行记录
+      if: always()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        runs=$(gh run list --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
+        count=0
+        for run_id in $runs; do
+          count=$((count + 1))
+          if [ $count -gt 1 ]; then
+            echo "删除运行记录: $run_id"
+            gh run delete $run_id || true
+          fi
+        done
